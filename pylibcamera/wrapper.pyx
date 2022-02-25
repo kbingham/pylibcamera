@@ -1,6 +1,6 @@
 import mmap
+import logging
 
-import tom.misc
 from cython import NULL, size_t
 
 from libcpp.vector cimport vector
@@ -300,7 +300,7 @@ cdef class LibCameraWrapper:
 
     def _dbg(self, message):
         if self.debug:
-            tom.misc.awesome(message)
+            logging.info(message)
 
     def __dealloc__(self):
         if self.allocator is not NULL:
