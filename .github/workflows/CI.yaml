@@ -25,6 +25,9 @@ jobs:
     - name: Install apt packages
       run: |
         sudo apt install -y python3-yaml python3-ply python3-jinja2 libgnutls28-dev openssl ninja-build pkg-config libboost-dev cmake libgtest-dev
+    - name: Install apt packages
+      run: |
+        sudo pip3 install meson
     - name: Install libcamera
       run: |
         bash deploy/install_libcamera.sh
