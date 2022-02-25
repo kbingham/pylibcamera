@@ -6,6 +6,6 @@
 git clone https://github.com/kbingham/libcamera.git
 
 cd libcamera
-meson build -Dpipelines=raspberrypi -Dtest=false -Dv4l2=true -Dpycamera=enabled
+meson build -Dpipelines=raspberrypi -Dtest=false -Dv4l2=true
 ninja -C build
 sudo ninja -C build install
