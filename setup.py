@@ -4,7 +4,7 @@ from Cython.Build import cythonize
 
 ext = Extension(
     'tom.camera.libcamera_wrapper', 
-    sources=["tom/camera/libcamera_wrapper.pyx"],
+    sources=["pylibcamera/libcamera_wrapper.pyx"],
     include_dirs = ["/usr/local/include/libcamera"],
     library_dirs = ["/usr/local/lib/x86_64-linux-gnu"],
     libraries=["camera"],
