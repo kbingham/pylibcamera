@@ -27,7 +27,7 @@ jobs:
         sudo apt install -y libgnutls28-dev openssl ninja-build pkg-config libboost-dev cmake libgtest-dev
     - name: Install apt needed to build libcamera
       run: |
-        sudo pip3 install meson jinja2 ply yaml
+        sudo pip3 install meson jinja2 ply pyyaml
     - name: Install libcamera
       run: |
         bash deploy/install_libcamera.sh
