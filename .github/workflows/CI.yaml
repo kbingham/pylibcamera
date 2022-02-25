@@ -24,14 +24,14 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install apt packages
       run: |
-        sudo apt install -y python3-yaml python3-ply python3-jinja2 libgnutls28-dev openssl ninja-build pkg-config libboost-dev cmake libgtest-dev
+        sudo apt install -y libgnutls28-dev openssl ninja-build pkg-config libboost-dev cmake libgtest-dev
+    - name: Install apt needed to build libcamera
+      run: |
+        python3 -m pip install meson jinja2 ply pyyaml
     - name: Install libcamera
       run: |
-        git clone git@github.com:kbingham/libcamera.git
-        cd libcamera
-        meson build
-        ninja -C build install
-    - name: Install python packages
+        bash deploy/install_libcamera.sh
+    - name: Install python packages for the build of the wrapper
       run: |
         pip3 install -r requirements.txt
     - name: Build the package
