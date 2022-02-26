@@ -37,3 +37,6 @@ jobs:
     - name: Build the package
       run: |
         python3 setup.py build
+    - name: Run the tests
+      run: |
+        PYTHONPATH=. python3 -m pytest pylibcamera
