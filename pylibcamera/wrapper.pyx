@@ -185,6 +185,8 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         int configure(CameraConfiguration *config);
         const ControlList &properties() const;
         unique_ptr[Request] createRequest(uint64_t cookie = 0);
+        int queueRequest(Request *request);
+        Signal requestCompleted;
 
     cdef cppclass CameraManager:
         CameraManager();
@@ -201,6 +203,10 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         int size();
         StreamConfiguration &at(unsigned int index);
         CC_Status validate();
+
+    cdef cppclass Signal[T, R]:
+        void connect(T *obj, R (*func))
+        void disconnect(T *obj, R (*func))
 
 cdef class PyCameraManager:
     cdef CameraManager* cm;
@@ -246,7 +252,6 @@ cdef class LibCameraWrapper:
 
         n_cameras = self.cm.cameras().size()
         assert n_cameras > 0, "No cameras detected"
-
         
         logging.info(f"# Cameras Detected: {n_cameras}")
         cams = self.cm.cameras()
@@ -312,14 +317,18 @@ cdef class LibCameraWrapper:
         for fd, mp in self.mmaps.items():
             logging.info(f"FD:{fd} = {mp}")
 
-        self.create_requests()
-
-    def create_requests(self):
         logging.info("Creating requests")
         self.request = self.camera.get().createRequest()
         assert self.request.get() is not NULL, "Failed to create request object?"
         self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
-        
+
+        self.camera.get().requestCompleted(self, self.request_callback)
+
+    cdef void request_callback(self, Request *request):
+        return
+
+    
+
     def __dealloc__(self):
         if self.allocator is not NULL:
             assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
