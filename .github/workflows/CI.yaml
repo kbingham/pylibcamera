@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       max-parallel: 5
       matrix:
@@ -25,9 +25,6 @@ jobs:
     - name: Install apt packages
       run: |
         sudo apt install -y libgnutls28-dev openssl ninja-build pkg-config libboost-dev cmake libgtest-dev
-    - name: Modprobe vimc
-      run: |
-        sudo modprobe vimc
     - name: Install apt needed to build libcamera
       run: |
         python3 -m pip install meson jinja2 ply pyyaml
