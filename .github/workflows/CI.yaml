@@ -28,15 +28,15 @@ jobs:
     - name: Install apt needed to build libcamera
       run: |
         python3 -m pip install meson jinja2 ply pyyaml
-    - name: Install libcamera
+    - name: Install libcamera (meson + ninja)
       run: |
         bash deploy/install_libcamera.sh
     - name: Install python packages for the build of the wrapper
       run: |
         pip3 install -r requirements.txt
-    - name: Build the package
+    - name: Build the package (cython)
       run: |
         python3 setup.py build
-    - name: Run the tests
+    - name: Run the tests (pytest)
       run: |
         PYTHONPATH=. python3 -m pytest pylibcamera

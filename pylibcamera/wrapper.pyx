@@ -299,7 +299,7 @@ cdef class LibCameraWrapper:
         
     def __dealloc__(self):
         if self.allocator is not NULL:
-            self.allocator.free()
+            assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
             del self.allocator
 
         if self.camera.get():
