@@ -202,6 +202,31 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         StreamConfiguration &at(unsigned int index);
         CC_Status validate();
 
+cdef class PyCameraManager:
+    cdef CameraManager* cm;
+
+    def __cinit__(self):
+        # Build/init the camera manager framework
+        self.cm = new CameraManager()
+        self.cm.start()
+
+        n_cameras = self.cm.cameras().size()
+       
+        logging.info(f"# Cameras Detected: {n_cameras}")
+        cams = self.cm.cameras()
+        for c in cams:
+            logging.info(f"- {c.get().id().decode()}")
+
+    def get_n_cameras(self):
+        return self.cm.cameras().size()
+
+    # def get_camera(self, int index):
+    #     return self.cm.cameras()[index]
+
+    def __dealloc__(self):
+        self.cm.stop()  
+        logging.info("Stopped camera manager")
+
 
 cdef class LibCameraWrapper:
     cdef CameraManager* cm;
@@ -214,9 +239,7 @@ cdef class LibCameraWrapper:
     cdef unique_ptr[Request] request;
     mmaps = {};
 
-    def __cinit__(self, int index, int debug=0):
-        self.debug = debug
-        
+    def __cinit__(self, int index):
         # Build/init the camera manager framework
         self.cm = new CameraManager()
         self.cm.start()
