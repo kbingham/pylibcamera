@@ -36,7 +36,7 @@ jobs:
         pip3 install -r requirements.txt
     - name: Build the package (cython)
       run: |
-        python3 setup.py build
+        bash build_cython.sh
     - name: Run the tests (pytest)
       run: |
         PYTHONPATH=. python3 -m pytest pylibcamera
