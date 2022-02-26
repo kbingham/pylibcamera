@@ -4,8 +4,6 @@ import os
 import pylibcamera.wrapper
 
 
-
-
 class TestLibCameraWrapper(unittest.TestCase):
     def test_camera_manager_wrapper(self):
         camera_manager = pylibcamera.wrapper.PyCameraManager()
