@@ -1,4 +1,7 @@
 import mmap
+import time
+import hashlib
+
 import logging
 
 from cython import NULL, size_t
@@ -170,6 +173,10 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         bool allocated();
         const vector[unique_ptr[FrameBuffer]] &buffers(Stream *stream);
 
+    cdef cppclass ReqSignal "libcamera::Signal<Request*>":
+        Signal()
+        void connect( void (*f_ptr)(Request* req) )
+        void disconnect( void (*f_ptr)(Request* req) )
 
     cdef cppclass Camera:
         int acquire();
@@ -185,6 +192,8 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         int configure(CameraConfiguration *config);
         const ControlList &properties() const;
         unique_ptr[Request] createRequest(uint64_t cookie = 0);
+        int queueRequest(Request *request);
+        ReqSignal requestCompleted;
 
     cdef cppclass CameraManager:
         CameraManager();
@@ -201,6 +210,7 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         int size();
         StreamConfiguration &at(unsigned int index);
         CC_Status validate();
+
 
 cdef class PyCameraManager:
     cdef CameraManager* cm;
@@ -223,9 +233,17 @@ cdef class PyCameraManager:
     # def get_camera(self, int index):
     #     return self.cm.cameras()[index]
 
+    def close(self):
+        if self.cm != NULL:
+            self.cm.stop()
+            self.cm = NULL
+            logging.info("Stopped camera manager")
+
     def __dealloc__(self):
-        self.cm.stop()  
-        logging.info("Stopped camera manager")
+        self.close()
+
+cdef void request_callback(Request *request):
+    logging.warn("Got a callback!!!")
 
 
 cdef class LibCameraWrapper:
@@ -246,7 +264,6 @@ cdef class LibCameraWrapper:
 
         n_cameras = self.cm.cameras().size()
         assert n_cameras > 0, "No cameras detected"
-
         
         logging.info(f"# Cameras Detected: {n_cameras}")
         cams = self.cm.cameras()
@@ -310,16 +327,39 @@ cdef class LibCameraWrapper:
 
         logging.info("Created memory maps:")
         for fd, mp in self.mmaps.items():
-            logging.info(f"FD:{fd} = {mp}")
+            h = hashlib.sha256(mp)
+            logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
-        self.create_requests()
-
-    def create_requests(self):
         logging.info("Creating requests")
         self.request = self.camera.get().createRequest()
         assert self.request.get() is not NULL, "Failed to create request object?"
         self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
+        logging.info("Added buffers")
+
+        logging.info("Starting camera")
+        self.camera.get().start(NULL)
         
+        # logging.info("Setup callback")
+        # self.camera.get().requestCompleted.connect(request_callback)
+
+        logging.info("Queueing request")
+        self.camera.get().queueRequest(self.request.get())
+
+        for i in range(100):
+            status = self.request.get().status()
+            logging.info(f"Request status: {status}")
+            if status == RequestComplete:
+                break
+            time.sleep(0.1)
+
+        logging.info("Created memory maps:")
+        for fd, mp in self.mmaps.items():
+            h = hashlib.sha256(mp)
+            logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
+
+        self.camera.get().stop()
+        logging.info("Stopped camera")
+
     def __dealloc__(self):
         if self.allocator is not NULL:
             assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
