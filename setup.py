@@ -11,4 +11,4 @@ ext = Extension(
     extra_compile_args= ["-std=c++17"],
     language="c++")
 
-setup(name="tomcamwrap", ext_modules = cythonize([ext]))
+setup(name="pylibcamera", ext_modules = cythonize([ext]))

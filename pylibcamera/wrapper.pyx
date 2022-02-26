@@ -1,6 +1,6 @@
 import mmap
+import logging
 
-import tom.misc
 from cython import NULL, size_t
 
 from libcpp.vector cimport vector
@@ -202,6 +202,31 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         StreamConfiguration &at(unsigned int index);
         CC_Status validate();
 
+cdef class PyCameraManager:
+    cdef CameraManager* cm;
+
+    def __cinit__(self):
+        # Build/init the camera manager framework
+        self.cm = new CameraManager()
+        self.cm.start()
+
+        n_cameras = self.cm.cameras().size()
+       
+        logging.info(f"# Cameras Detected: {n_cameras}")
+        cams = self.cm.cameras()
+        for c in cams:
+            logging.info(f"- {c.get().id().decode()}")
+
+    def get_n_cameras(self):
+        return self.cm.cameras().size()
+
+    # def get_camera(self, int index):
+    #     return self.cm.cameras()[index]
+
+    def __dealloc__(self):
+        self.cm.stop()  
+        logging.info("Stopped camera manager")
+
 
 cdef class LibCameraWrapper:
     cdef CameraManager* cm;
@@ -214,9 +239,7 @@ cdef class LibCameraWrapper:
     cdef unique_ptr[Request] request;
     mmaps = {};
 
-    def __cinit__(self, int index, int debug=0):
-        self.debug = debug
-        
+    def __cinit__(self, int index):
         # Build/init the camera manager framework
         self.cm = new CameraManager()
         self.cm.start()
@@ -225,16 +248,16 @@ cdef class LibCameraWrapper:
         assert n_cameras > 0, "No cameras detected"
 
         
-        self._dbg(f"# Cameras Detected: {n_cameras}")
+        logging.info(f"# Cameras Detected: {n_cameras}")
         cams = self.cm.cameras()
         for c in cams:
-            self._dbg(f"- {c.get().id().decode()}")
+            logging.info(f"- {c.get().id().decode()}")
 
         # Get a specific camera to wrap
         self.camera = self.cm.cameras()[index]
         assert self.camera.get().acquire() == 0, "Failed to acquire camera"
 
-        self._dbg(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
+        logging.info(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
 
         # Generate a configuration that support raw stills
         # NOTE(meawoppl) - the example I am following uses this, but lib barfs when I add "StillCapture" and "Raw", so IDK
@@ -243,19 +266,19 @@ cdef class LibCameraWrapper:
         assert self.camera_cfg.get() is not NULL
 
         n_cam_configs = self.camera_cfg.get().size()
-        self._dbg(f"# Camera Stream Configurations: {n_cam_configs}")
+        logging.info(f"# Camera Stream Configurations: {n_cam_configs}")
         for i in range(n_cam_configs):
             cfg = self.camera_cfg.get().at(i)
-            self._dbg(f"Config #{i} - '{cfg.toString().c_str().decode()}'")  
+            logging.info(f"Config #{i} - '{cfg.toString().c_str().decode()}'")  
 
         # TODO(meawoppl) change config settings before camera.configre()
         assert self.camera_cfg.get().validate() == CC_Status.Valid
         assert self.camera.get().configure(self.camera_cfg.get()) >= 0
 
-        self._dbg("Using stream config #0")
+        logging.info("Using stream config #0")
         self.stream_cfg = self.camera_cfg.get().at(0)
         
-        self._dbg("Allocating buffers")
+        logging.info("Allocating buffers")
         # Allocate buffers for the camera/stream pair
         self.allocator = new FrameBufferAllocator(self.camera)
         assert self.allocator.allocate(self.stream_cfg.stream()) >= 0, "Buffers did not allocate?"
@@ -264,7 +287,7 @@ cdef class LibCameraWrapper:
         # The unique_ptr make it so we can't reify this object...
         self.buffers = new vector[FrameBuffer*]()
         n_buffers = self.allocator.buffers(self.stream_cfg.stream()).size()
-        self._dbg(f"{n_buffers} buffers allocated")
+        logging.info(f"{n_buffers} buffers allocated")
         for buff_num in range(n_buffers):
             self.buffers.push_back(self.allocator.buffers(self.stream_cfg.stream()).at(i).get())
             b = self.allocator.buffers(self.stream_cfg.stream()).at(i).get()
@@ -274,7 +297,7 @@ cdef class LibCameraWrapper:
                 plane_fd = b.planes().at(plane_num).fd.get()
                 plane_off = b.planes().at(plane_num).offset
                 plane_len = b.planes().at(plane_num).length
-                self._dbg(f"Buffer #{buff_num} Plane #{plane_num} FD: {plane_fd} Offset: {plane_off} Len: {plane_len}")
+                logging.info(f"Buffer #{buff_num} Plane #{plane_num} FD: {plane_fd} Offset: {plane_off} Len: {plane_len}")
 
                 if plane_fd not in self.mmaps:
                     self.mmaps[plane_fd] = mmap.mmap(
@@ -285,30 +308,26 @@ cdef class LibCameraWrapper:
                         access=mmap.ACCESS_DEFAULT,
                         offset=plane_off)
 
-        self._dbg("Created memory maps:")
+        logging.info("Created memory maps:")
         for fd, mp in self.mmaps.items():
-            self._dbg(f"FD:{fd} = {mp}")
+            logging.info(f"FD:{fd} = {mp}")
 
         self.create_requests()
 
     def create_requests(self):
-        self._dbg("Creating requests")
+        logging.info("Creating requests")
         self.request = self.camera.get().createRequest()
         assert self.request.get() is not NULL, "Failed to create request object?"
         self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
         
-
-    def _dbg(self, message):
-        if self.debug:
-            tom.misc.awesome(message)
-
     def __dealloc__(self):
         if self.allocator is not NULL:
+            assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
             del self.allocator
 
         if self.camera.get():
             self.camera.get().release()
-            self._dbg("Released Camera")
+            logging.info("Released Camera")
 
         self.cm.stop()  
-        self._dbg("Stopped camera manager")
+        logging.info("Stopped camera manager")
