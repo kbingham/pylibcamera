@@ -233,10 +233,14 @@ cdef class PyCameraManager:
     # def get_camera(self, int index):
     #     return self.cm.cameras()[index]
 
-    def __dealloc__(self):
-        self.cm.stop()  
-        logging.info("Stopped camera manager")
+    def close(self):
+        if self.cm != NULL:
+            self.cm.stop()
+            self.cm = NULL
+            logging.info("Stopped camera manager")
 
+    def __dealloc__(self):
+        self.close()
 
 cdef void request_callback(Request *request):
     logging.warn("Got a callback!!!")
