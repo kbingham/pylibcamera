@@ -201,6 +201,8 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         # ~CameraManager();
 
         vector[shared_ptr[Camera]] cameras() const;
+        string version();
+
         int start();
         void stop();
         Camera get(dev_t devnum);
@@ -214,35 +216,64 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
 
 
 cdef class PyCameraManager:
+    """
+    This class wraps the camera manager surface of libcamera
+    NB: The application should only ever init this -ONCE-
+    TODO(meawoppl) - singleton whatnot to protect users
+    """
     cdef CameraManager* cm;
 
     def __cinit__(self):
-        # Build/init the camera manager framework
         self.cm = new CameraManager()
-        self.cm.start()
+        
+        logging.info(f"libcamera version: {self.version()}")
+
+        rval = self.cm.start()
+        assert rval == 0, f"Camera Manager did not start {rval}"
 
         n_cameras = self.cm.cameras().size()
        
         logging.info(f"# Cameras Detected: {n_cameras}")
         cams = self.cm.cameras()
+        i = 0
         for c in cams:
-            logging.info(f"- {c.get().id().decode()}")
+            logging.info(f"- ({i}) {c.get().id().decode()}")
+            i += 1
+
+    def version(self):
+        return self.cm.version().decode()
+
+    def get_camera_names(self):
+        names = []
+        cams = self.cm.cameras()
+        for c in cams:
+            names.append(c.get().id().decode())
+        return names
 
     def get_n_cameras(self):
+        """
+        Return the number of cameras that this library
+        can access.
+        """
         return self.cm.cameras().size()
 
     def get_camera(self, int index):
-        logging.info("GC")
-        cdef PyCamera c = PyCamera.__new__(PyCamera)
-        logging.info("inited")
-        c._camera = self.cm.cameras().at(index)
-        logging.info("assigne")
-        return c 
+        """
+        Return a wrapped libcamera driven device based on the index specified
+        """
+        # TODO(meawoppl) This feels gross
+        cdef PyCamera pc = PyCamera.__new__(PyCamera)
+        pc._camera = self.cm.cameras()[index]
+        return pc 
 
     def close(self):
+        """
+        Close and deallocate camera manager resources.
+        Attempts to use the class after calling this method
+        will almost certainly fail.
+        """
         if self.cm != NULL:
             self.cm.stop()
-            del self.cm
             self.cm = NULL
             logging.info("Stopped camera manager")
 
@@ -263,34 +294,24 @@ cdef class PyCamera:
     mmaps = {};
     images = [];
 
-    # @staticmethod
-    # cdef PyCamera from_index(self, int index):
-    #     cm = PyCameraManager()
-
-    #     cdef PyCamera camera = PyCamera.__new__(PyCamera)
-    #     camera._camera = cm.get_camera(index)
-    #     return camera
-
-    def __cinit__(self):
-        pass
-        # Get a specific camera to wrap
-        # self._camera = camera
-        # assert self._camera.get().acquire() == 0, "Failed to acquire camera"
-
-        # logging.info(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
-
     def configure(self):
+        assert self._camera != NULL
+
+        camera_name = self._camera.get().id().decode()
+        logging.info(f"Configuration underway for: {camera_name}")
+        
+        self._camera.get().acquire()
         # Generate a configuration that support raw stills
         # NOTE(meawoppl) - the example I am following uses this, but lib barfs when I add "StillCapture" and "Raw", so IDK
         # self.config = self.camera.generateConfiguration([StreamRole.StillCapture, StreamRole.Raw])   
         self._camera_cfg = self._camera.get().generateConfiguration([StreamRole.StillCapture])   
-        assert self._camera_cfg.get() is not NULL
+        assert self._camera_cfg.get() != NULL
 
         n_cam_configs = self._camera_cfg.get().size()
         logging.info(f"# Camera Stream Configurations: {n_cam_configs}")
         for i in range(n_cam_configs):
             cfg = self._camera_cfg.get().at(i)
-            logging.info(f"Config #{i} - '{cfg.toString().c_str().decode()}'")  
+            logging.info(f"Config #{i} - '{cfg.toString().c_str()}'")  
 
         # TODO(meawoppl) change config settings before camera.configre()
         assert self._camera_cfg.get().validate() == CC_Status.Valid
@@ -351,14 +372,14 @@ cdef class PyCamera:
         logging.info("Queueing request")
         self._camera.get().queueRequest(self.request.get())
 
-        for i in range(100):
+        for i in range(20):
             status = self.request.get().status()
             logging.info(f"Request status: {status}")
             if status == RequestComplete:
                 break
             time.sleep(0.1)
 
-        logging.info("Created memory maps:")
+        logging.info("Memory maps hashes:")
         for fd, mp in self.mmaps.items():
             h = hashlib.sha256(mp)
             logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
@@ -368,11 +389,15 @@ cdef class PyCamera:
         self._camera.get().stop()
         logging.info("Stopped camera")
 
-    def __dealloc__(self):
-        if self.allocator is not NULL:
+    def close(self):
+        if self.allocator != NULL:
             assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
-            del self.allocator
+            self.allocator = NULL
 
-        if self._camera.get():
+        if self._camera.get() != NULL:
             self._camera.get().release()
             logging.info("Released Camera")
+
+
+    def __dealloc__(self):
+        self.close()

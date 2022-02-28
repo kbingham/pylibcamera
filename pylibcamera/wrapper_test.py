@@ -1,27 +1,46 @@
 import unittest
-import os
+import logging
 
 import pylibcamera.wrapper
 
 
 class TestLibCameraWrapper(unittest.TestCase):
-    def test_camera_manager_wrapper(self):
-        camera_manager = pylibcamera.wrapper.PyCameraManager()
-        try:
-            assert camera_manager.get_n_cameras() >= 0
-        finally:
-            camera_manager.close()
+    @classmethod
+    def setUpClass(cls):
+        cls._cam_manager = pylibcamera.wrapper.PyCameraManager()
 
-    def test_camera_manager_wrapper_multiple(self):
+    @classmethod
+    def teatDownClass(cls):
+        cls._cam_manager.close()
+
+    def test_camera_manager_wrapper(self):
+        assert self._cam_manager.get_n_cameras() >= 0
+
+    def test_get_names(self):
+        names = self._cam_manager.get_camera_names()
+        assert len(names) == self._cam_manager.get_n_cameras()
+
+    def test_get_version(self):
+        assert "0.0.0" in self._cam_manager.version()
+
+    def _skip_if_no_camera(self):
+        if self._cam_manager.get_n_cameras() == 0:
+            self.skipTest("No cameras available on this system")
+
+    def test_get_camera(self):
+        c = self._cam_manager.get_camera(0)
+
+        # Test close is idempotent
         for i in range(3):
-            camera_manager = pylibcamera.wrapper.PyCameraManager()
-            camera_manager.close()
+            c.close()
 
     def test_everything(self):
-        camera_manager = pylibcamera.wrapper.PyCameraManager()
-        camera = camera_manager.get_camera(0)
-        camera.close()
-        camera_manager.close()
-        print("FP?")
+        self._skip_if_no_camera()
+
+        camera = self._cam_manager.get_camera(0)
+
         camera.configure()
+        camera.allocate_buffer()
+        camera.create_requests()
+        camera.close()
 
