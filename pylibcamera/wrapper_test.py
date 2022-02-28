@@ -12,7 +12,16 @@ class TestLibCameraWrapper(unittest.TestCase):
         finally:
             camera_manager.close()
 
+    def test_camera_manager_wrapper_multiple(self):
+        for i in range(3):
+            camera_manager = pylibcamera.wrapper.PyCameraManager()
+            camera_manager.close()
+
     def test_everything(self):
-        if not os.path.exists("/dev/media0"):
-            self.skipTest("Requires a media device")
-        camera = pylibcamera.wrapper.LibCameraWrapper(0)
+        camera_manager = pylibcamera.wrapper.PyCameraManager()
+        camera = camera_manager.get_camera(0)
+        camera.close()
+        camera_manager.close()
+        print("FP?")
+        camera.configure()
+

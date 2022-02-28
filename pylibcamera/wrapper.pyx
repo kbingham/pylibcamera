@@ -3,6 +3,7 @@ import time
 import hashlib
 
 import logging
+import numpy as np
 
 from cython import NULL, size_t
 
@@ -230,12 +231,18 @@ cdef class PyCameraManager:
     def get_n_cameras(self):
         return self.cm.cameras().size()
 
-    # def get_camera(self, int index):
-    #     return self.cm.cameras()[index]
+    def get_camera(self, int index):
+        logging.info("GC")
+        cdef PyCamera c = PyCamera.__new__(PyCamera)
+        logging.info("inited")
+        c._camera = self.cm.cameras().at(index)
+        logging.info("assigne")
+        return c 
 
     def close(self):
         if self.cm != NULL:
             self.cm.stop()
+            del self.cm
             self.cm = NULL
             logging.info("Stopped camera manager")
 
@@ -246,58 +253,56 @@ cdef void request_callback(Request *request):
     logging.warn("Got a callback!!!")
 
 
-cdef class LibCameraWrapper:
-    cdef CameraManager* cm;
-    cdef shared_ptr[Camera] camera;
-    cdef int debug;
-    cdef unique_ptr[CameraConfiguration] camera_cfg;
+cdef class PyCamera:
+    cdef shared_ptr[Camera] _camera;
+    cdef unique_ptr[CameraConfiguration] _camera_cfg;
     cdef StreamConfiguration stream_cfg;
     cdef FrameBufferAllocator* allocator;
     cdef vector[FrameBuffer*]* buffers;
     cdef unique_ptr[Request] request;
     mmaps = {};
+    images = [];
 
-    def __cinit__(self, int index):
-        # Build/init the camera manager framework
-        self.cm = new CameraManager()
-        self.cm.start()
+    # @staticmethod
+    # cdef PyCamera from_index(self, int index):
+    #     cm = PyCameraManager()
 
-        n_cameras = self.cm.cameras().size()
-        assert n_cameras > 0, "No cameras detected"
-        
-        logging.info(f"# Cameras Detected: {n_cameras}")
-        cams = self.cm.cameras()
-        for c in cams:
-            logging.info(f"- {c.get().id().decode()}")
+    #     cdef PyCamera camera = PyCamera.__new__(PyCamera)
+    #     camera._camera = cm.get_camera(index)
+    #     return camera
 
+    def __cinit__(self):
+        pass
         # Get a specific camera to wrap
-        self.camera = self.cm.cameras()[index]
-        assert self.camera.get().acquire() == 0, "Failed to acquire camera"
+        # self._camera = camera
+        # assert self._camera.get().acquire() == 0, "Failed to acquire camera"
 
-        logging.info(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
+        # logging.info(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
 
+    def configure(self):
         # Generate a configuration that support raw stills
         # NOTE(meawoppl) - the example I am following uses this, but lib barfs when I add "StillCapture" and "Raw", so IDK
         # self.config = self.camera.generateConfiguration([StreamRole.StillCapture, StreamRole.Raw])   
-        self.camera_cfg = self.camera.get().generateConfiguration([StreamRole.StillCapture])   
-        assert self.camera_cfg.get() is not NULL
+        self._camera_cfg = self._camera.get().generateConfiguration([StreamRole.StillCapture])   
+        assert self._camera_cfg.get() is not NULL
 
-        n_cam_configs = self.camera_cfg.get().size()
+        n_cam_configs = self._camera_cfg.get().size()
         logging.info(f"# Camera Stream Configurations: {n_cam_configs}")
         for i in range(n_cam_configs):
-            cfg = self.camera_cfg.get().at(i)
+            cfg = self._camera_cfg.get().at(i)
             logging.info(f"Config #{i} - '{cfg.toString().c_str().decode()}'")  
 
         # TODO(meawoppl) change config settings before camera.configre()
-        assert self.camera_cfg.get().validate() == CC_Status.Valid
-        assert self.camera.get().configure(self.camera_cfg.get()) >= 0
+        assert self._camera_cfg.get().validate() == CC_Status.Valid
+        assert self._camera.get().configure(self._camera_cfg.get()) >= 0
 
         logging.info("Using stream config #0")
-        self.stream_cfg = self.camera_cfg.get().at(0)
+        self.stream_cfg = self._camera_cfg.get().at(0)
         
+    def allocate_buffer(self):
         logging.info("Allocating buffers")
         # Allocate buffers for the camera/stream pair
-        self.allocator = new FrameBufferAllocator(self.camera)
+        self.allocator = new FrameBufferAllocator(self._camera)
         assert self.allocator.allocate(self.stream_cfg.stream()) >= 0, "Buffers did not allocate?"
         assert self.allocator.allocated(), "Buffers did not allocate?"
 
@@ -306,8 +311,8 @@ cdef class LibCameraWrapper:
         n_buffers = self.allocator.buffers(self.stream_cfg.stream()).size()
         logging.info(f"{n_buffers} buffers allocated")
         for buff_num in range(n_buffers):
-            self.buffers.push_back(self.allocator.buffers(self.stream_cfg.stream()).at(i).get())
-            b = self.allocator.buffers(self.stream_cfg.stream()).at(i).get()
+            self.buffers.push_back(self.allocator.buffers(self.stream_cfg.stream()).at(buff_num).get())
+            b = self.allocator.buffers(self.stream_cfg.stream()).at(buff_num).get()
 
             n_planes = b.planes().size()
             for plane_num in range(n_planes):
@@ -330,20 +335,21 @@ cdef class LibCameraWrapper:
             h = hashlib.sha256(mp)
             logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
+    def create_requests(self):
         logging.info("Creating requests")
-        self.request = self.camera.get().createRequest()
+        self.request = self._camera.get().createRequest()
         assert self.request.get() is not NULL, "Failed to create request object?"
         self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
         logging.info("Added buffers")
 
         logging.info("Starting camera")
-        self.camera.get().start(NULL)
+        self._camera.get().start(NULL)
         
         # logging.info("Setup callback")
         # self.camera.get().requestCompleted.connect(request_callback)
 
         logging.info("Queueing request")
-        self.camera.get().queueRequest(self.request.get())
+        self._camera.get().queueRequest(self.request.get())
 
         for i in range(100):
             status = self.request.get().status()
@@ -357,7 +363,9 @@ cdef class LibCameraWrapper:
             h = hashlib.sha256(mp)
             logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
-        self.camera.get().stop()
+            self.images.append(np.frombuffer(mp).copy())
+
+        self._camera.get().stop()
         logging.info("Stopped camera")
 
     def __dealloc__(self):
@@ -365,9 +373,6 @@ cdef class LibCameraWrapper:
             assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
             del self.allocator
 
-        if self.camera.get():
-            self.camera.get().release()
+        if self._camera.get():
+            self._camera.get().release()
             logging.info("Released Camera")
-
-        self.cm.stop()  
-        logging.info("Stopped camera manager")
