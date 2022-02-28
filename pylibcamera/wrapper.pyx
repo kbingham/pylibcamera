@@ -95,16 +95,15 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         RequestCancelled "libcamera::Request::RequestCancelled"
 
     # Request reuse flag
-    ctypedef enum ReuseFlag:
-        Default = 0,
-        ReuseBuffers = (1 << 0),
-
+    ctypedef enum ReuseFlag "libcamera::Request::ReuseFlag":
+        Default "libcamera::Request::Default"
+        ReuseBuffers "libcamera::Request::ReuseBuffers"
 
     cdef cppclass Request:
         uint32_t sequence();
         uint64_t cookie();
         Rq_Status status();
-        void reuse(ReuseFlag flags = Default);
+        void reuse(ReuseFlag flags);
         ControlList &controls()
         ControlList &metadata()
         # const BufferMap &buffers() const { return bufferMap_; }
@@ -290,9 +289,9 @@ cdef class PyCamera:
     cdef StreamConfiguration stream_cfg;
     cdef FrameBufferAllocator* allocator;
     cdef vector[FrameBuffer*]* buffers;
-    cdef unique_ptr[Request] request;
     mmaps = {};
     images = [];
+    cdef vector[unique_ptr[Request]]* requests;
 
     def configure(self):
         assert self._camera != NULL
@@ -351,17 +350,27 @@ cdef class PyCamera:
                         access=mmap.ACCESS_DEFAULT,
                         offset=plane_off)
 
+        self.dump_mmaps()
+
+    def dump_mmaps(self):
         logging.info("Created memory maps:")
         for fd, mp in self.mmaps.items():
             h = hashlib.sha256(mp)
             logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
     def create_requests(self):
-        logging.info("Creating requests")
-        self.request = self._camera.get().createRequest()
-        assert self.request.get() is not NULL, "Failed to create request object?"
-        self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
-        logging.info("Added buffers")
+        self.requests = new vector[unique_ptr[Request]]()
+
+        n_requests = 2
+        for i in range(n_requests):
+            logging.info("Creating requests")
+            self.requests.push_back(self._camera.get().createRequest())
+
+        for i in range(n_requests):
+            assert self.requests.at(i).get() != NULL, "Failed to create request object?"
+            self.requests.at(i).get().reuse(ReuseBuffers)
+            self.requests.at(i).get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
+            logging.info("Added buffers")
 
         logging.info("Starting camera")
         self._camera.get().start(NULL)
@@ -369,22 +378,28 @@ cdef class PyCamera:
         # logging.info("Setup callback")
         # self.camera.get().requestCompleted.connect(request_callback)
 
-        logging.info("Queueing request")
-        self._camera.get().queueRequest(self.request.get())
+        for i in range(n_requests):
+            logging.info("Queueing request")
+            self._camera.get().queueRequest(self.requests.at(i).get())
 
-        for i in range(20):
-            status = self.request.get().status()
-            logging.info(f"Request status: {status}")
-            if status == RequestComplete:
-                break
-            time.sleep(0.1)
+        # time.sleep(10)
 
-        logging.info("Memory maps hashes:")
-        for fd, mp in self.mmaps.items():
-            h = hashlib.sha256(mp)
-            logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
+        # for i in range(20):
+        #     for r in range(n_requests):
+        #         status = self.requests.at(r).get().status()
+        #         logging.info(f"Request status {r}: {status}")
+        #         if status == RequestComplete:
+        #             break
+        #     time.sleep(0.1)
 
-            self.images.append(np.frombuffer(mp).copy())
+        # logging.info("Memory maps hashes:")
+        # for fd, mp in self.mmaps.items():
+        #     h = hashlib.sha256(mp)
+        #     logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
+
+        #     self.images.append(np.frombuffer(mp).copy())
+
+
 
         self._camera.get().stop()
         logging.info("Stopped camera")
