@@ -3,7 +3,9 @@ import time
 import hashlib
 
 import logging
+import numpy as np
 
+import cython
 from cython import NULL, size_t
 
 from libcpp.vector cimport vector
@@ -94,16 +96,15 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         RequestCancelled "libcamera::Request::RequestCancelled"
 
     # Request reuse flag
-    ctypedef enum ReuseFlag:
-        Default = 0,
-        ReuseBuffers = (1 << 0),
-
+    ctypedef enum ReuseFlag "libcamera::Request::ReuseFlag":
+        Default "libcamera::Request::Default"
+        ReuseBuffers "libcamera::Request::ReuseBuffers"
 
     cdef cppclass Request:
         uint32_t sequence();
         uint64_t cookie();
         Rq_Status status();
-        void reuse(ReuseFlag flags = Default);
+        void reuse(ReuseFlag flags);
         ControlList &controls()
         ControlList &metadata()
         # const BufferMap &buffers() const { return bufferMap_; }
@@ -173,10 +174,12 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         bool allocated();
         const vector[unique_ptr[FrameBuffer]] &buffers(Stream *stream);
 
-    cdef cppclass ReqSignal "libcamera::Signal<Request*>":
+    # ctypedef ReqFunc void(*func)(Request *request)
+
+    cdef cppclass Signal[R]:
         Signal()
-        void connect( void (*f_ptr)(Request* req) )
-        void disconnect( void (*f_ptr)(Request* req) )
+        void connect( void (*f_ptr)(R* req) )
+        void disconnect( void (*f_ptr)(R* req) )
 
     cdef cppclass Camera:
         int acquire();
@@ -193,13 +196,15 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
         const ControlList &properties() const;
         unique_ptr[Request] createRequest(uint64_t cookie = 0);
         int queueRequest(Request *request);
-        ReqSignal requestCompleted;
+        Signal[Request] requestCompleted;
 
     cdef cppclass CameraManager:
         CameraManager();
         # ~CameraManager();
 
         vector[shared_ptr[Camera]] cameras() const;
+        string version();
+
         int start();
         void stop();
         Camera get(dev_t devnum);
@@ -213,25 +218,66 @@ cdef extern from "libcamera/libcamera.h" namespace "libcamera":
 
 
 cdef class PyCameraManager:
+    """
+    This class wraps the camera manager surface of libcamera
+    NB: The application should only ever init this -ONCE-
+    TODO(meawoppl) - singleton whatnot to protect users
+    """
     cdef CameraManager* cm;
 
     def __cinit__(self):
-        # Build/init the camera manager framework
         self.cm = new CameraManager()
-        self.cm.start()
+        
+        logging.info(f"libcamera version: {self.version()}")
+
+        rval = self.cm.start()
+        assert rval == 0, f"Camera Manager did not start {rval}"
 
         n_cameras = self.cm.cameras().size()
        
         logging.info(f"# Cameras Detected: {n_cameras}")
         cams = self.cm.cameras()
+        i = 0
         for c in cams:
-            logging.info(f"- {c.get().id().decode()}")
+            logging.info(f"- ({i}) {c.get().id().decode()}")
+            i += 1
+
+    def version(self):
+        return self.cm.version().decode()
+
+    def get_camera_names(self):
+        names = []
+        cams = self.cm.cameras()
+        for c in cams:
+            names.append(c.get().id().decode())
+        return names
 
     def get_n_cameras(self):
+        """
+        Return the number of cameras that this library
+        can access.
+        """
         return self.cm.cameras().size()
 
-    # def get_camera(self, int index):
-    #     return self.cm.cameras()[index]
+    def get_camera(self, int index):
+        """
+        Return a wrapped libcamera driven device based on the index specified
+        """
+        # TODO(meawoppl) This feels gross
+        cdef PyCamera pc = PyCamera.__new__(PyCamera)
+        pc._camera = self.cm.cameras()[index]
+        return pc 
+
+    def close(self):
+        """
+        Close and deallocate camera manager resources.
+        Attempts to use the class after calling this method
+        will almost certainly fail.
+        """
+        if self.cm != NULL:
+            self.cm.stop()
+            self.cm = NULL
+            logging.info("Stopped camera manager")
 
     def close(self):
         if self.cm != NULL:
@@ -242,73 +288,73 @@ cdef class PyCameraManager:
     def __dealloc__(self):
         self.close()
 
-cdef void request_callback(Request *request):
+
+@cython.ccall
+@cython.returns(cython.void)
+cdef void cpp_cb(Request* request):
     logging.warn("Got a callback!!!")
 
 
-cdef class LibCameraWrapper:
-    cdef CameraManager* cm;
-    cdef shared_ptr[Camera] camera;
-    cdef int debug;
-    cdef unique_ptr[CameraConfiguration] camera_cfg;
+cdef class PyCamera:
+    cdef shared_ptr[Camera] _camera;
+    cdef unique_ptr[CameraConfiguration] _camera_cfg;
     cdef StreamConfiguration stream_cfg;
     cdef FrameBufferAllocator* allocator;
     cdef vector[FrameBuffer*]* buffers;
-    cdef unique_ptr[Request] request;
+    cdef vector[unique_ptr[Request]]* requests;
+
     mmaps = {};
+    images = [];
+   
+    def __cinit__(self):
+        self.buffers = new vector[FrameBuffer*]()
+        self.requests = new vector[unique_ptr[Request]]()
 
-    def __cinit__(self, int index):
-        # Build/init the camera manager framework
-        self.cm = new CameraManager()
-        self.cm.start()
+    def configure(self):
+        assert self._camera != NULL
 
-        n_cameras = self.cm.cameras().size()
-        assert n_cameras > 0, "No cameras detected"
+        camera_name = self._camera.get().id().decode()
+        logging.info(f"Configuration underway for: {camera_name}")
         
-        logging.info(f"# Cameras Detected: {n_cameras}")
-        cams = self.cm.cameras()
-        for c in cams:
-            logging.info(f"- {c.get().id().decode()}")
-
-        # Get a specific camera to wrap
-        self.camera = self.cm.cameras()[index]
-        assert self.camera.get().acquire() == 0, "Failed to acquire camera"
-
-        logging.info(f"Sucessfully acquired camera: {self.camera.get().id().decode()}")
-
+        self._camera.get().acquire()
         # Generate a configuration that support raw stills
         # NOTE(meawoppl) - the example I am following uses this, but lib barfs when I add "StillCapture" and "Raw", so IDK
         # self.config = self.camera.generateConfiguration([StreamRole.StillCapture, StreamRole.Raw])   
-        self.camera_cfg = self.camera.get().generateConfiguration([StreamRole.StillCapture])   
-        assert self.camera_cfg.get() is not NULL
+        self._camera_cfg = self._camera.get().generateConfiguration([StreamRole.StillCapture])   
+        assert self._camera_cfg.get() != NULL
 
-        n_cam_configs = self.camera_cfg.get().size()
+        n_cam_configs = self._camera_cfg.get().size()
         logging.info(f"# Camera Stream Configurations: {n_cam_configs}")
         for i in range(n_cam_configs):
-            cfg = self.camera_cfg.get().at(i)
-            logging.info(f"Config #{i} - '{cfg.toString().c_str().decode()}'")  
+            cfg = self._camera_cfg.get().at(i)
+            logging.info(f"Config #{i} - '{cfg.toString().c_str()}'")  
 
         # TODO(meawoppl) change config settings before camera.configre()
-        assert self.camera_cfg.get().validate() == CC_Status.Valid
-        assert self.camera.get().configure(self.camera_cfg.get()) >= 0
+        assert self._camera_cfg.get().validate() == CC_Status.Valid
+        assert self._camera.get().configure(self._camera_cfg.get()) >= 0
 
         logging.info("Using stream config #0")
-        self.stream_cfg = self.camera_cfg.get().at(0)
+        self.stream_cfg = self._camera_cfg.get().at(0)
         
+    def create_buffers_and_requests(self):
+        assert self.allocator == NULL
+        self.allocator = new FrameBufferAllocator(self._camera)
+
         logging.info("Allocating buffers")
         # Allocate buffers for the camera/stream pair
-        self.allocator = new FrameBufferAllocator(self.camera)
+        
         assert self.allocator.allocate(self.stream_cfg.stream()) >= 0, "Buffers did not allocate?"
         assert self.allocator.allocated(), "Buffers did not allocate?"
 
         # The unique_ptr make it so we can't reify this object...
-        self.buffers = new vector[FrameBuffer*]()
         n_buffers = self.allocator.buffers(self.stream_cfg.stream()).size()
         logging.info(f"{n_buffers} buffers allocated")
         for buff_num in range(n_buffers):
-            self.buffers.push_back(self.allocator.buffers(self.stream_cfg.stream()).at(i).get())
-            b = self.allocator.buffers(self.stream_cfg.stream()).at(i).get()
+            # Create the buffer for the request
+            self.buffers.push_back(self.allocator.buffers(self.stream_cfg.stream()).at(buff_num).get())
+            b = self.buffers.back()
 
+            # Extract its memory maps
             n_planes = b.planes().size()
             for plane_num in range(n_planes):
                 plane_fd = b.planes().at(plane_num).fd.get()
@@ -325,49 +371,58 @@ cdef class LibCameraWrapper:
                         access=mmap.ACCESS_DEFAULT,
                         offset=plane_off)
 
+            # Create the request for the buffer and load it in.
+            self.requests.push_back(self._camera.get().createRequest())
+            self.requests.back().get().addBuffer(self.stream_cfg.stream(), self.buffers.back())
+
+        self.dump_mmaps()
+
+    def dump_mmaps(self):
         logging.info("Created memory maps:")
         for fd, mp in self.mmaps.items():
             h = hashlib.sha256(mp)
             logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
-        logging.info("Creating requests")
-        self.request = self.camera.get().createRequest()
-        assert self.request.get() is not NULL, "Failed to create request object?"
-        self.request.get().addBuffer(self.stream_cfg.stream(), self.buffers.at(0))
-        logging.info("Added buffers")
-
+    def run_cycle(self):
         logging.info("Starting camera")
-        self.camera.get().start(NULL)
+        self._camera.get().start(NULL)
         
-        # logging.info("Setup callback")
-        # self.camera.get().requestCompleted.connect(request_callback)
+        logging.info("Setup callback")
+        # logging.info(self._camera.get().requestCompleted.connect)
+        self._camera.get().requestCompleted.connect(cpp_cb)
+        
+        #self.camera.get().requestCompleted[0].connect(cpp_cb)
 
-        logging.info("Queueing request")
-        self.camera.get().queueRequest(self.request.get())
+        for i in range(self.requests.size()):
+            logging.info(f"Queueing request {i}")
+            self._camera.get().queueRequest(self.requests.at(i).get())
 
-        for i in range(100):
-            status = self.request.get().status()
-            logging.info(f"Request status: {status}")
-            if status == RequestComplete:
+        # time.sleep(10)
+
+        for i in range(20):
+            if any(self.requests.at(r).get().status() == RequestComplete for r in range(self.requests.size())):
                 break
             time.sleep(0.1)
 
-        logging.info("Created memory maps:")
-        for fd, mp in self.mmaps.items():
-            h = hashlib.sha256(mp)
-            logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
+        # logging.info("Memory maps hashes:")
+        # for fd, mp in self.mmaps.items():
+        #     h = hashlib.sha256(mp)
+        #     logging.info(f"FD:{fd} = {mp} hash: {h.hexdigest()}")
 
-        self.camera.get().stop()
+        #     self.images.append(np.frombuffer(mp).copy())
+
+        self._camera.get().stop()
         logging.info("Stopped camera")
 
-    def __dealloc__(self):
-        if self.allocator is not NULL:
+    def close(self):
+        if self.allocator != NULL:
             assert self.allocator.free(self.stream_cfg.stream()) >= 0, "Couldn't deallocate buffers?"
-            del self.allocator
+            self.allocator = NULL
 
-        if self.camera.get():
-            self.camera.get().release()
+        if self._camera.get() != NULL:
+            self._camera.get().release()
             logging.info("Released Camera")
 
-        self.cm.stop()  
-        logging.info("Stopped camera manager")
+
+    def __dealloc__(self):
+        self.close()
